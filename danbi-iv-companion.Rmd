@@ -1,0 +1,108 @@
+---
+title: "도구 변수 활용사례: 여성 임금과 학력"
+author: DANBI
+date: 2019-08-08
+assets:
+  css:
+    - "https://fonts.googleapis.com/css?family=Nanum+Gothic"
+    - "http://fonts.googleapis.com/css?family=Oxygen"
+output:
+  rmarkdown::html_document:
+    theme: readable
+    highlight: zenburn 
+---
+
+<style>
+body{
+  font-family: 'Nanum Gothic', sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+h1,h2,h3,h4 {
+  font-family: 'Raleway', sans-serif;
+}
+</style>
+
+그냥 넘어가기 섭섭하니, 실제 분석 사례를 하나 소개하기로 하자. [데이터](http://eclr.humanities.manchester.ac.uk/index.php/R#Data_Sets)는 울드리지 교수의 계량경제학 교과서에서 가져왔다. 데이터는 1975년 753명의 여성 노동자를 대상으로 임금, 나이, 자녀, 결혼 상태 등 각종 변수를 담고 있다. 
+
+먼저 자료의 csv를 다운 받아서 적절한 방식으로 통계 패키지에 로드하도록 하자. 여기서는 R의 AER 패키지에 담긴 `ivreg` 명령을 활용할 예정이다.[^1] 
+
+[^1]: 분석은 이 곳을 참고했다. http://eclr.humanities.manchester.ac.uk/index.php/IV_in_R
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE}
+library(tidyverse)
+library(AER)
+
+mydata <- 
+  read_csv('data/mroz.csv') %>% 
+  na_if('.') %>%  
+  filter(!is.na(wage)) %>% 
+  mutate(
+    lwage = as.numeric(lwage)
+  )
+```
+
+데이터에는 NA값이 '.'으로 되어 있어 이를 NA로 바꾸고, 해당 값을 제외한다. 
+
+### OLS
+
+```{r}
+reg_ex0 <- lm(lwage ~ educ, data=mydata)
+summary(reg_ex0)
+```
+
+로그 임금을 교육년수로 회귀했을 때 계수는 약 0.11이다. 즉, 교육년수가 1년 올라갈 때 임금이 약 11% 정도 증가하는 것으로 이해할 수 있다. 그런데 이 회귀분석은 문제가 있다. 임금수준과 교육년수에 모두 영향을 줄 수 있는 요인이 있다면, OLS 추정량은 일치성을 지니지 않는다. 
+
+### Simple IV
+
+```{r}
+reg_iv0 <- ivreg(lwage~educ|fatheduc,data=mydata)
+summary(reg_iv0)
+```
+
+해당 노동자의 아버지의 교육년수를 도구 변수로 활용해보았다. 교육년수는 10% 유의수준에서 통계적으로 유의미하고 그 크기 역시 6% 정도로 크게 낮아졌다.아버지의 교육년수는 도구 변수로 적절할까? 우선 아버지의 교육년수와 딸의 교육년수 사이에는 높은 상관성이 존재할 것 같다. 아버지의 교육년수와 딸의 임금 수준의 관계는 어떨까? 뭔가 애매한 느낌이다. 도구 변수의 적절성을 테스트해 볼 방법은 없을까? 도구 변수가 갖추어야 하는 두가지 특징, 즉 내생 변수와 충분한 상관성을 지닐 것 그리고 원래 회귀식의 오차항과 상관성이 없을 것, 을 테스트하기 위해서 `ivreg`에 `diagnoses = TRUE` 옵션을 추가해보자. 
+
+```{r}
+reg_iv0 <- ivreg(lwage~educ|fatheduc,data=mydata)
+summary(reg_iv0, diagnostics = TRUE)
+```
+
+* "Weak instruments": 도구 변수가 내생변수와 약한 상관성을 지녔는지 검정한다. $H_0$은 '상관성이 없다,'이다. 
+* "Wu-Hausman": IV(도구변수) 추정량이 일치성을 지니는지를 검정한다. $H_0$이 '일치성이 존재한다,'이다.
+* Sargan: IV가 여러 개 있을 때, 해당 도구 변수가 오차항에 대해서 외생적인지를 검정한다. $H_0$이 '외생적이다,'이다. 
+
+### IV in action 
+
+```{r}
+reg_1 <- lm(lwage~educ+age+exper+expersq, data=mydata) # OLS estimation
+summary(reg_1)
+```
+
+통제변수를 추가해도 OLS에서 교육년수의 계수는 크게 변하지 않았다. 인과관계 추론에서는 통제변수를 더 넣는다고 해도 상황이 개선되지 않는 경우가 많다. 
+
+```{r}
+reg_iv1 <- ivreg(lwage~educ+exper+expersq|fatheduc+motheduc+exper+expersq,data=mydata)
+summary(reg_iv1, vcov = sandwich, diagnostics = T)
+```
+
+이번에는 도구 변수로 여성 노동자의 부모 모두의 교육년수를 활용했다. `ivreg`에서는 `|` 뒤에 도구 변수를 포함해서 오차항에 외생적이라고 간주할 수 있는 변수를 모두 넣어준다. IV를 통한 추정 결과 여성 노동자의 교육년수는 10% 유의 수준에서 임금에 대해 약 6%의 영향을 끼치고 있음을 알 수 있다. 
+
+IV 모형이 잘 설정되었는지 확인해보자. 
+
+- Weak instruments test의 영가설을 기각했으므로 내생변수와의 상관성이 있다고 간주할 수 있다. 
+- Wu-Hausman test의 영가설을 기각하지 못했으므로 IV 추정량은 일치 추정량이라고 간주할 수 있다. 
+- Sargan test는 영가설을 기각하지 못했으므로 부적절한 IV를 포함하고 있지 않다고 간주할 수 있다. 
+
+그리고 `vcov = sandwich` 옵션은 검정에 활용되는 분산-공분산 행렬을 통해 이분산성을 고려하기 위해 것이다. 손해날 것이 없으니 왠만하면 이 옵션을 쓰는 편이 좋다. 
+
+```
+reg_iv2 <- ivreg(lwage~educ+exper+expersq|.-educ+fatheduc+motheduc,data=mydata)
+
+```
+
+위와 같은 식으로 표현할 수도 있다. 위 식에서 `.-`이하는 원래 회귀식에서 내생변수(`educ`)과 이의 추정에 동원되는 IV들(`fathereduc`, `motheduc`)을 나타낸다. 
+
+이 결과에서 보듯이 IV 회귀분석은 OLS이 지니는 가장 근본적인 한계를 교정할 수 있는 좋은 수단이다. 당신의 데이터에서 IV로 사용될 만한 것이 없는지 한번 고민해보실 때다! 
+
